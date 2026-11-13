@@ -2,17 +2,45 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# Run as the companion pane's command, independent of the user's default shell.
+# This process owns its capture pipe and temporary directory.
+if [ "${1:-}" = --run-pane ]; then
+    target=$2
+    capture_dir=$3
+    cleanup() {
+        tmux pipe-pane -t "$target" 2>/dev/null || true
+        rm -f "$capture_dir/output"
+        rmdir "$capture_dir" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    COMEJI_CODEX_FIFO="$capture_dir/output" python3 "$script_dir/comeji.py"
+    exit "$?"
+fi
+
+quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+usage() {
+    printf 'usage: %s [--no-codex] [-t pane]\n' "$0" >&2
+    exit 2
+}
+
 no_codex=0
 target=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --no-codex) no_codex=1 ;;
         -t)
-            [ "$#" -ge 2 ] || { printf 'usage: %s [--no-codex] [-t pane]\n' "$0" >&2; exit 2; }
+            [ "$#" -ge 2 ] || usage
             target=$2
             shift
             ;;
-        *) printf 'usage: %s [--no-codex] [-t pane]\n' "$0" >&2; exit 2 ;;
+        *) usage ;;
     esac
     shift
 done
@@ -22,14 +50,10 @@ if [ "$no_codex" -eq 1 ] && [ -z "${TMUX:-}" ] && [ -z "$target" ]; then
 fi
 command -v tmux >/dev/null 2>&1 || { printf '%s: tmux is required\n' "$0" >&2; exit 1; }
 
+current_pane=${TMUX_PANE:-}
 current_window=""
-if [ -n "${TMUX_PANE:-}" ]; then
-    current_window=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null || true)
-else
-    current_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
-    if [ -n "$current_pane" ]; then
-        current_window=$(tmux display-message -p -t "$current_pane" '#{window_id}' 2>/dev/null || true)
-    fi
+if [ -n "$current_pane" ]; then
+    current_window=$(tmux display-message -p -t "$current_pane" '#{window_id}' 2>/dev/null || true)
 fi
 
 find_codex() {
@@ -66,80 +90,66 @@ EOF_PANES
 }
 
 if [ "$no_codex" -eq 1 ]; then
-    if [ -z "$target" ]; then target=${TMUX_PANE:-${current_pane:-}}; fi
+    target=${target:-$current_pane}
     [ -n "$target" ] || { printf '%s: --no-codex needs a current pane or -t target\n' "$0" >&2; exit 2; }
-    comeji_pane=$(tmux split-window -h -t "$target" -P -F '#{pane_id}' "exec python3 '$script_dir/comeji.py'")
-    target_window=$(tmux display-message -p -t "$comeji_pane" '#{session_name}:#{window_index}')
-    if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$target_window"; else tmux attach-session -t "$target_window"; fi
-    exit 0
-fi
-
-if [ -z "$target" ]; then
+elif [ -z "$target" ]; then
     if target=$(find_codex); then :
     else
         result=$?
         if [ "$result" -eq 2 ]; then
             printf '%s: multiple Codex panes; specify -t pane\n' "$0" >&2
-            exit 2
+        else
+            printf '%s: no Codex pane found; specify -t pane or use --no-codex\n' "$0" >&2
         fi
-        target=""
+        exit 2
     fi
 fi
 
-if [ -n "$target" ]; then
-    pipe_check_line=$LINENO
+# Resolve once to immutable IDs before creating or cleaning up anything.
+target=$(tmux display-message -p -t "$target" '#{pane_id}')
+case "$target" in
+    %*[!0-9]*|%|'') printf '%s: invalid pane ID\n' "$0" >&2; exit 2 ;;
+    %*) ;;
+    *) printf '%s: invalid pane ID\n' "$0" >&2; exit 2 ;;
+esac
+target_window=$(tmux display-message -p -t "$target" '#{window_id}')
+
+capture_dir=""
+comeji_pane=""
+pipe_started=0
+cleanup_setup() {
+    if [ "$pipe_started" -eq 1 ]; then tmux pipe-pane -t "$target" 2>/dev/null || true; fi
+    if [ -n "$comeji_pane" ]; then tmux kill-pane -t "$comeji_pane" 2>/dev/null || true; fi
+    if [ -n "$capture_dir" ]; then
+        rm -f "$capture_dir/output"
+        rmdir "$capture_dir" 2>/dev/null || true
+    fi
+}
+trap cleanup_setup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ "$no_codex" -eq 1 ]; then
+    pane_command="exec python3 $(quote "$script_dir/comeji.py")"
+else
+    # POSIX sh need not provide LINENO (and set -u makes using it fatal).
+    pipe_check_line=$(awk '/^[ ]*if .*pane_pipe/ {print NR; exit}' "$script_dir/launch.sh")
     if [ "$(tmux display-message -p -t "$target" '#{pane_pipe}')" = 1 ]; then
         printf '%s:%s: pane %s already has pipe-pane; leaving it untouched\n' "$0" "$pipe_check_line" "$target" >&2
         exit 1
     fi
-    fifo="${TMPDIR:-/tmp}/comeji-$$.fifo"
-    done_file="${TMPDIR:-/tmp}/comeji-$$.done"
-    rm -f "$fifo" "$done_file"
-    mkfifo "$fifo"
-    target_window=$(tmux display-message -p -t "$target" '#{session_name}:#{window_index}')
-    comeji_pane=$(tmux split-window -h -t "$target" -P -F '#{pane_id}')
-    cleanup_target() {
-        tmux pipe-pane -t "$target" 2>/dev/null || true
-        tmux kill-pane -t "$comeji_pane" 2>/dev/null || true
-        rm -f "$fifo" "$done_file"
-    }
-    trap cleanup_target EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    tmux pipe-pane -t "$target" "cat > '$fifo'"
-    cmd="COMEJI_CODEX_FIFO='$fifo' python3 '$script_dir/comeji.py'; status=\$?; : > '$done_file'; tmux pipe-pane -t '$target' 2>/dev/null || :; rm -f '$fifo'; tmux kill-pane -t '$comeji_pane' 2>/dev/null || :; exit \$status"
-    tmux send-keys -t "$comeji_pane" "$cmd" Enter
-    if [ -n "${TMUX:-}" ]; then
-        tmux switch-client -t "$target_window"
-    else
-        tmux attach-session -t "$target_window"
-        exit 0
-    fi
-    while [ ! -e "$done_file" ]; do
-        tmux display-message -p -t "$comeji_pane" '#{pane_id}' >/dev/null 2>&1 || break
-        sleep 0.1
-    done
-    exit 0
+    capture_dir=$(mktemp -d "${TMPDIR:-/tmp}/comeji.XXXXXXXX")
+    mkfifo "$capture_dir/output"
+    tmux pipe-pane -O -t "$target" "exec cat > $(quote "$capture_dir/output")"
+    pipe_started=1
+    pane_command="exec sh $(quote "$script_dir/launch.sh") --run-pane $(quote "$target") $(quote "$capture_dir")"
 fi
 
-# No Codex pane: keep the owned-session fallback.
-session="comeji-$$"
-fifo="${TMPDIR:-/tmp}/comeji-$$.fifo"
-rm -f "$fifo"
-mkfifo "$fifo"
-cleanup_owned() {
-    if [ -n "${codex_pane:-}" ]; then tmux pipe-pane -t "$codex_pane" 2>/dev/null || true; fi
-    tmux kill-session -t "$session" 2>/dev/null || true
-    rm -f "$fifo"
-}
-trap cleanup_owned EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-codex_pane=$(tmux new-session -d -s "$session" -P -F '#{pane_id}')
-comeji_pane=$(tmux split-window -h -t "$codex_pane" -P -F '#{pane_id}')
-tmux pipe-pane -t "$codex_pane" "cat > '$fifo'"
-tmux send-keys -t "$comeji_pane" "COMEJI_CODEX_FIFO='$fifo' exec python3 '$script_dir/comeji.py'" Enter
-tmux send-keys -t "$codex_pane" "if codex; then status=0; else status=\$?; fi; tmux kill-session -t '$session' 2>/dev/null; exit \$status" Enter
-if [ -n "${TMUX:-}" ]; then TMUX= tmux attach-session -t "$session"; else tmux attach-session -t "$session"; fi
+# Pass a command at creation: never inject text into a pane's input.
+comeji_pane=$(tmux split-window -d -h -t "$target" -P -F '#{pane_id}' "$pane_command")
+# The companion now owns capture cleanup. Returning lets Codex launch us safely.
+trap - EXIT HUP INT TERM
+if [ -z "${TMUX:-}" ]; then
+    tmux attach-session -t "$target_window"
+fi

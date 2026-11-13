@@ -27,33 +27,16 @@ Run `python3 comeji.py` standalone or use `launch.sh` for tmux.
 
 The launcher searches for Codex in the current window first, then across all
 sessions. It prefers the active Codex pane in an attached session and asks for
-`-t` if multiple matches remain. With no match, it creates an owned Codex and
-Comeji session. `--no-codex` splits the current pane/window for autonomous
-Comeji, or runs directly outside tmux; `-t pane` selects a pane explicitly.
+`-t` if multiple matches remain. With no match, it reports an error; it never
+starts Codex or sends keystrokes. `--no-codex` splits the current pane/window
+for autonomous Comeji, or runs directly outside tmux; `-t` selects any pane.
 Capture refuses to replace an existing `pipe-pane`, reporting the launcher
-line number to stderr. In an existing session, quitting Comeji or interrupting
-the launcher closes only its pane and capture pipe.
-
-```text
-if no_codex_target:
-    scope = create_owned_tmux_scope()
-    codex_pane, comeji_pane = create_two_panes(scope)
-    start_in(comeji_pane, "exec python3 comeji.py")
-    start_in(codex_pane):
-        run_codex()
-        close(scope)
-    attach_to(scope)
-else:
-    target = explicit_target or find_codex_target()
-    comeji_pane = split(target)
-    capture_target_output(target)
-    start_in(comeji_pane, "exec python3 comeji.py")
-    on_comeji_exit_or_launcher_signal:
-        close(comeji_pane)  # leave target pane and session alive
-```
-
-Keep the lifecycle out of `comeji.py`: curses returns on `q`, and the pane's
-foreground process ends. The launcher owns cleanup of the larger tree.
+line number to stderr. Commands start directly in the new pane, independent
+of the user's interactive shell. Inside tmux the launcher returns immediately
+and preserves focus; the companion process owns cleanup of its capture.
+Quitting Comeji closes its own pane and capture, leaving the target alive.
+Setup failures clean up only resources created by that invocation. No launcher
+path kills a session or server.
 
 ## Implementation status
 
@@ -71,4 +54,26 @@ related `Searched`, `Read`, `Edited`, `Wrote` and `Running` cues.
 
 ## After implementation
 
-- Commit the completed project, then add a few wacky ideas of Codex's choosing.
+The initial implementation is committed as `a50503c`; the ideas below are
+speculative possibilities, not current implementation requirements.
+
+## Implementation lessons
+
+- Terminal output capture and pane lifetime are separate resources; cleanup
+  must follow ownership boundaries.
+- Keep tool-specific stream decoding at the input edge, and translate it into
+  small, expiring behavior hints for the character.
+- Fixed-grid artwork depends on one stride being honored by loading, movement,
+  clipping and drawing.
+- Simulations can verify launcher decisions, while PTYs verify curses behavior;
+  neither justifies probing a shared terminal multiplexer as though it were
+  isolated.
+
+## Wacky idea jar
+
+- Give Comeji occasional zoomies: sprint to an edge, overshoot in spirit, then
+  turn back with a tiny pause as if embarrassed.
+- Let it inspect the stream: swivel its ears toward fresh output, then look back
+  at the user when a tool finishes.
+- During sleep, let a small `z` drift upward and vanish; some nights it dreams
+  in punctuation from the latest tool output.
