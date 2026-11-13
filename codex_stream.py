@@ -5,12 +5,29 @@ import re
 import time
 
 
-STATUS = re.compile(
-    r"\b(Thinking|Working|Worked|Typing|Using\s+shell|Using\s+skill|"
-    r"Viewed|Viewing|Ran|Running|Goal\s+active|Searched|Read|Edited|Wrote)\b"
-    r"|\(no output\)",
-    re.IGNORECASE,
+CUES = re.compile(
+    r"\b(?P<goal>Goal\s*[:=]?\s*\[?(?:active|completed?|blocked|paused|budget[_ -]limit|usage[_ -]limit))\b|"
+    r"\b(?P<effort>(?:reasoning\s+)?effort\s*[:=]?\s*(?P<level>minimal|low|medium|high|xhigh|max|ultra))\b|"
+    r"\b(?P<context>context\s*[:=]?\s*(?P<used>100|[0-9]{1,2})\s*%(?:\s+(?P<left>left|remaining))?|"
+    r"(?P<remaining>100|[0-9]{1,2})\s*%\s+(?:context\s+)?(?:left|remaining))|"
+    r"\b(?P<status>Thinking|Working|Worked|Typing|Using\s+shell|Using\s+skill|"
+    r"Viewed|Viewing|Ran|Running|Searched|Read|Edited|Wrote|Writing|"
+    r"Compacting|Compacted|Waiting|Interrupted|Error|Failed|Retrying)\b|"
+    r"(?P<empty>\(no output\))", re.IGNORECASE,
 )
+
+
+def cue_action(match):
+    cue = " ".join(match.group().casefold().split())
+    return {
+        "thinking": "think", "typing": "write", "edited": "write",
+        "wrote": "write", "writing": "write", "viewed": "view",
+        "viewing": "view", "read": "view", "searched": "view",
+        "ran": "running", "running": "running", "worked": "idle",
+        "(no output)": "idle", "compacting": "compact", "compacted": "context_roomy",
+        "waiting": "waiting", "interrupted": "waiting", "error": "blocked",
+        "failed": "blocked", "retrying": "working",
+    }.get(cue, "working")
 
 
 def colors(params, fg, bg):
@@ -62,6 +79,7 @@ class CodexStream:
         self.fg = self.bg = None
         self.hint_fg = self.hint_bg = None
         self.updated = 0.0
+        self.effects = {}
 
     def feed(self, data):
         for c in self.decoder.decode(data):
@@ -70,21 +88,30 @@ class CodexStream:
                     self.mode = "escape"
                 elif c.isprintable() or c in "\t\n\r":
                     text = self.tail + c
-                    matches = list(STATUS.finditer(text))
-                    match = matches[-1] if matches and matches[-1].end() == len(text) else None
-                    if match:
-                        cue = match.group(0).casefold()
-                        self.action = (
-                            "idle" if cue in {"worked", "(no output)"} else
-                            "view" if cue in {"viewed", "viewing", "read", "searched"} else
-                            "running" if cue in {"ran", "running"} else
-                            "goal" if cue == "goal active" else
-                            "working"
-                        )
-                        self.updated = time.monotonic()
-                    self.tail = text[-64:]
+                    matches = list(CUES.finditer(text))
+                    if matches and matches[-1].end() == len(text):
+                        match = matches[-1]
+                        now = time.monotonic()
+                        if match.group("context"):
+                            remaining = match.group("remaining")
+                            value = int(remaining or match.group("used"))
+                            if remaining is None and match.group("left") is None:
+                                value = 100 - value
+                            self.effects["context"] = value
+                        elif match.group("effort"):
+                            self.effects["effort"] = match.group("level").casefold()
+                        elif match.group("goal"):
+                            status = re.sub(r"^goal\s*[:=]?\s*\[?", "", match.group(), flags=re.I)
+                            self.effects["goal"] = status.casefold().replace("-", "_").replace(" ", "_")
+                            self.effects["goal_at"] = now
+                        else:
+                            self.action = cue_action(match)
+                            self.updated = now
+                            if self.action == "blocked":
+                                self.effects["error_at"] = now
+                    self.tail = text[-192:]
                 elif ord(c) < 32:
-                    self.tail = (self.tail + " ")[-64:]
+                    self.tail = (self.tail + " ")[-192:]
             elif self.mode == "escape":
                 if c == "[":
                     self.mode, self.csi = "csi", ""
@@ -95,14 +122,12 @@ class CodexStream:
             elif self.mode == "csi":
                 if "@" <= c <= "~":
                     if c == "m":
-                        old = self.fg, self.bg
                         self.fg, self.bg = colors(self.csi, self.fg, self.bg)
                         if self.fg is not None:
                             self.hint_fg = self.fg
                         if self.bg is not None:
                             self.hint_bg = self.bg
-                        if old != (self.fg, self.bg):
-                            self.updated = time.monotonic()
+
                     self.mode = "text"
                 else:
                     self.csi += c

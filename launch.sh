@@ -17,7 +17,7 @@ if [ "${1:-}" = --run-pane ]; then
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    COMEJI_CODEX_FIFO="$capture_dir/output" python3 "$script_dir/comeji.py"
+    COMEJI_BORDER=1 COMEJI_CODEX_FIFO="$capture_dir/output" python3 "$script_dir/comeji.py"
     exit "$?"
 fi
 
@@ -35,6 +35,7 @@ target=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --no-codex) no_codex=1 ;;
+        --popup) : ;;  # Accept the former flag; floating is now the default.
         -t)
             [ "$#" -ge 2 ] || usage
             target=$2
@@ -114,6 +115,7 @@ case "$target" in
 esac
 target_window=$(tmux display-message -p -t "$target" '#{window_id}')
 
+
 capture_dir=""
 comeji_pane=""
 pipe_started=0
@@ -131,7 +133,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 if [ "$no_codex" -eq 1 ]; then
-    pane_command="exec python3 $(quote "$script_dir/comeji.py")"
+    pane_command="exec env COMEJI_BORDER=1 python3 $(quote "$script_dir/comeji.py")"
 else
     # POSIX sh need not provide LINENO (and set -u makes using it fatal).
     pipe_check_line=$(awk '/^[ ]*if .*pane_pipe/ {print NR; exit}' "$script_dir/launch.sh")
@@ -146,8 +148,8 @@ else
     pane_command="exec sh $(quote "$script_dir/launch.sh") --run-pane $(quote "$target") $(quote "$capture_dir")"
 fi
 
-# Pass a command at creation: never inject text into a pane's input.
-comeji_pane=$(tmux split-window -d -h -t "$target" -P -F '#{pane_id}' "$pane_command")
+# A floating pane remains visible while the target retains keyboard focus.
+comeji_pane=$(sh "$script_dir/../../tools/tmux-pane" floating "$target" "$pane_command")
 # The companion now owns capture cleanup. Returning lets Codex launch us safely.
 trap - EXIT HUP INT TERM
 if [ -z "${TMUX:-}" ]; then

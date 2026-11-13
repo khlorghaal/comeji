@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import terminal
+from effects import compose
 from codex_stream import CodexStream
 
 
@@ -20,14 +21,25 @@ ARTWORKS = {
     "working": ("walk_a", "walk_b"),
     "running": ("walk_b", "walk_a"),
 }
-ANIMATIONS = ARTWORKS
+for name in ("idle", "sleep", "view", "think", "ponder", "write", "compact", "waiting", "blocked"):
+    ARTWORKS[name] = tuple(f"{name}_{i}" for i in range(4))
+
+ACTION_DURATIONS = {
+    "walk":  (3.0, 7.0),
+    "idle":  (1.0, 3.0),
+    "view":  (1.0, 2.5),
+    "sleep": (2.5, 5.0),
+}
 MOVE_INTERVAL = 0.22
+FRAME_INTERVAL = 0.35
+HINT_DURATION = 2.5
 
 
 def load_artwork():
     artworks = {}
     name, rows = None, []
-    for line in (Path(__file__).with_name("artwork.txt")).read_text().splitlines() + [""]:
+    lines = Path(__file__).with_name("artwork.txt").read_text().splitlines()
+    for line in lines + [""]:
         if line and len(line) == ART_STRIDE and name:
             rows.append(line)
         elif line and len(line) != ART_STRIDE:
@@ -47,14 +59,11 @@ ART = load_artwork()
 
 def choose_action(now):
     action = random.choices(
-        ("walk", "idle", "view", "sleep"), weights=
-        (     6,      2,      1,       1))[0]
-    return action, now + random.uniform(*({
-        "walk":  (3.0, 7.0),
-        "idle":  (1.0, 3.0),
-        "view":  (1.0, 2.5),
-        "sleep": (2.5, 5.0),
-    }[action]))
+        ("walk", "idle", "view", "sleep"),
+        weights=(6, 2, 1, 1),
+    )[0]
+    return action, now + random.uniform(*ACTION_DURATIONS[action])
+
 
 def main():
     x = 0
@@ -74,32 +83,45 @@ def main():
 
         if fifo_fd is not None:
             try:
-                while data := os.read(fifo_fd, 65536):
+                data = os.read(fifo_fd, 65536)
+                if data:
                     stream.feed(data)
             except BlockingIOError:
                 pass
 
         hinted_action, colors, hint_time = stream.snapshot()
-        fresh_hint = now - hint_time < 2.5
-        shown_action = hinted_action if fresh_hint and hinted_action in ANIMATIONS else action
-
-        colors = colors if fresh_hint else {}
+        fresh_hint = now - hint_time < HINT_DURATION
+        shown_action = action
+        if fresh_hint and hinted_action in ARTWORKS:
+            shown_action = hinted_action
+        if not fresh_hint:
+            colors = {}
         _, width = size
         max_x = max(0, width - ART_STRIDE)
         x = min(max(x, 0), max_x)
 
-        if shown_action in {"walk", "working", "running", "goal"} and now >= move_at and max_x:
+        moving = shown_action in {"walk", "working", "running", "goal"}
+        if moving and now >= move_at and max_x:
             x += direction
             if x <= 0 or x >= max_x:
                 x = min(max(x, 0), max_x)
                 direction *= -1
                 action = "idle"
                 deadline = now + random.uniform(0.3, 0.8)
-            move_at = now + (MOVE_INTERVAL / 2 if shown_action == "running" else MOVE_INTERVAL)
+            interval = MOVE_INTERVAL / 2 if shown_action == "running" else MOVE_INTERVAL
+            move_at = now + interval
 
         frames = ARTWORKS[shown_action]
-        frame = ART[frames[int(now / 0.35) % len(frames)]]
-        return frame, x, colors
+        effort = stream.effects.get("effort", "medium")
+        interval = FRAME_INTERVAL
+        if shown_action == "think":
+            if effort in {"high", "xhigh", "max", "ultra"}:
+                frames = ARTWORKS["ponder"]
+                interval *= 0.65
+            elif effort in {"minimal", "low"}:
+                interval *= 1.4
+        frame = ART[frames[int(now / interval) % len(frames)]]
+        return compose(frame, stream.effects, now), x, colors
 
     try:
         terminal.run(step)

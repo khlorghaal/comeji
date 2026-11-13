@@ -1,6 +1,7 @@
 """Curses input, colors, drawing and cleanup."""
 
 import curses
+import os
 
 TICK = 0.125
 PALETTE = (
@@ -67,6 +68,7 @@ def run(step):
         palette_size = 8
         current_color = None
         color_enabled = False
+        border_attr = curses.A_DIM
         try:
             if curses.has_colors():
                 curses.start_color()
@@ -76,6 +78,9 @@ def run(step):
                 except curses.error:
                     pass
                 curses.init_pair(1, 0, -1)
+                if palette_size >= 256:
+                    curses.init_pair(2, 237, -1)
+                    border_attr = curses.color_pair(2)
                 color_enabled = True
         except curses.error:
             color_enabled = False
@@ -85,20 +90,33 @@ def run(step):
             if key in (ord("q"), ord("Q"), 3):
                 break
             height, width = stdscr.getmaxyx()
-            frame, x, colors = step((height, width))
+            border = os.environ.get("COMEJI_BORDER") == "1" and height > 1 and width > 1
+            frame, x, colors = step((height - int(border), width - int(border)))
             stdscr.erase()
             if height and width:
                 try:
+                    if border:
+                        for y in range(height - 1):
+                            stdscr.addstr(y, 0, "█", border_attr)
+                        try:
+                            stdscr.addstr(height - 1, 0, "█" * width, border_attr)
+                        except curses.error:
+                            pass  # curses may report an error after writing the last cell.
+                        height -= 1
+                        width -= 1
+                        x += 1
                     color = color_index(colors, palette_size) if color_enabled else None
                     if color != current_color and color is not None:
                         curses.init_pair(1, color, -1)
                         current_color = color
                     attr = curses.color_pair(1) if color is not None else 0
                     rows = [frame[i:i + 12] for i in range(0, len(frame), 12)]
+                    if height <= 6:
+                        rows = [rows[i] for i in (0, 2, 4, 5, 9, 11)]
                     visible = min(height, len(rows))
                     for i, row in enumerate(rows[-visible:]):
                         y = height - visible + i
-                        count = width - x - (1 if y == height - 1 else 0)
+                        count = width + int(border) - x - (1 if not border and y == height - 1 else 0)
                         if count > 0:
                             stdscr.addnstr(y, x, row, count, attr)
                 except curses.error: pass
