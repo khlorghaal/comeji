@@ -8,16 +8,31 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ "${1:-}" = --run-pane ]; then
     target=$2
     capture_dir=$3
+    (
+        previous=""
+        while size=$(tmux display-message -p -t "$TMUX_PANE" '#{window_width}x#{window_height}' 2>/dev/null); do
+            if [ "$size" != "$previous" ]; then
+                tmux move-pane -t "$TMUX_PANE" -P top-right 2>/dev/null || break
+                previous=$size
+            fi
+            sleep 1
+        done
+    ) &
+    watcher=$!
     cleanup() {
-        tmux pipe-pane -t "$target" 2>/dev/null || true
-        rm -f "$capture_dir/output"
-        rmdir "$capture_dir" 2>/dev/null || true
+        kill "$watcher" 2>/dev/null || true
+        if [ -n "$capture_dir" ]; then
+            tmux pipe-pane -t "$target" 2>/dev/null || true
+            rm -f "$capture_dir/output"
+            rmdir "$capture_dir" 2>/dev/null || true
+        fi
     }
     trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    COMEJI_BORDER=1 COMEJI_CODEX_FIFO="$capture_dir/output" python3 "$script_dir/comeji.py"
+    if [ -n "$capture_dir" ]; then export COMEJI_CODEX_FIFO="$capture_dir/output"; fi
+    COMEJI_BORDER=1 python3 "$script_dir/comeji.py"
     exit "$?"
 fi
 
@@ -133,7 +148,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 if [ "$no_codex" -eq 1 ]; then
-    pane_command="exec env COMEJI_BORDER=1 python3 $(quote "$script_dir/comeji.py")"
+    pane_command="exec sh $(quote "$script_dir/launch.sh") --run-pane $(quote "$target") ''"
 else
     # POSIX sh need not provide LINENO (and set -u makes using it fatal).
     pipe_check_line=$(awk '/^[ ]*if .*pane_pipe/ {print NR; exit}' "$script_dir/launch.sh")
