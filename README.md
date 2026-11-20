@@ -1,7 +1,8 @@
 # Comeji
 
-Run `python3 comeji.py`; `q` quits. Idle, walk, view, goal and sleep artwork
-comes from 12×12 grids in `artwork.txt`.
+Install NumPy with `apt install python-numpy`, then run `python3 comeji.py`; `q`
+quits. Animation frames are arranged left-to-right in 12-row strips in
+`artwork.txt`; NumPy reshapes each strip into 12×12 frames.
 
 `sh launch.sh` attaches to an existing Codex pane. Use
 `--no-codex` for autonomous mode, or `-t pane` to choose a pane. Fresh Codex

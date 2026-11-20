@@ -1,25 +1,20 @@
 # Comeji
 
-## Todo
-
-- Extract the reusable tmux launch method into a standalone Unix-style tool;
-  have Comeji use it. Share it with lllx, which needs a regular right-hand pane.
-
 Make a little character that lives in a tmux pane. It should be pleasant to
 watch even when nothing else is happening: walking, pausing, looking around and
 occasionally sleeping. This is a terminal program, not a desktop overlay.
 
 ## First version
 
-- Draw a 12×12 character from text grids in `artwork.txt`; select animation
-  elements by index and address cells with a stride of 12.
+- Draw a 12×12 character from horizontal animation strips in `artwork.txt`;
+  reshape each strip into 12×12 frames and select by frame index.
 - It walks along the bottom of its pane, turns at the edges, idles and sometimes
   sleeps. Randomly vary the duration of actions so it doesn't feel mechanical.
 - `q` quits. It runs in a regular terminal as well as tmux. Resizing the pane
   keeps the character visible, including when the pane is too small for a frame.
-- No configuration system, networking, asset format, package manager or
-  external runtime dependencies. The optional tmux launcher can pass Codex
-  hints; autonomous life must stand on its own.
+- No configuration system, networking, custom asset format or dependency
+  manager. NumPy is required for horizontal animation strips. The optional
+  tmux launcher can pass Codex hints; autonomous life must stand on its own.
 
 ## Architecture
 
@@ -80,8 +75,8 @@ random autonomous behavior; metadata effects remain until replaced.
 
 ## Verification
 
-- All referenced artwork grids are 12×12; redesigned actions and layered
-  effects were inspected together as rendered images.
+- All decoded animation frames are 12×12; the 17 horizontal strips contain 54
+  frames and loaded correctly with NumPy 2.5.4.
 - Parser checks covered every chunk size for effort, used/remaining context,
   and goal labels, plus ANSI-separated activity and persistent metadata.
 - Effect checks covered layering and celebration expiry. Standalone curses
@@ -91,6 +86,7 @@ random autonomous behavior; metadata effects remain until replaced.
 - Floating-pane behavior is verified on a private explicit tmux socket:
   placement, retained target focus, drawing and cleanup before the resize.
   No session or server kill commands are used; host tmux remains untouched.
+- NumPy-backed Comeji started and quit cleanly in an 80×24 PTY.
 
 ## After implementation
 
